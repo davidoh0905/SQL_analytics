@@ -6,6 +6,9 @@
 -- # make sure to provide order by every single time!
 -- # Original row_number - filtered_row_number is just one way to resolve this kind of question
 -- # Try remembering the other way!!
+
+-- # another food for thought!
+-- # there could be more than one condition to qualify for being consecutive!
 """
 Calculate the number of consecutive free seats
 Row Operation is important
