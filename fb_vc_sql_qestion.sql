@@ -115,4 +115,169 @@ select sum(0)
 
 
 3. What fraction of messages get a response within a minute?
+  ds (STRING)            # date stamp, 'YYYY-MM-DD'
+  ts (BIGINT)            # time stamp, in seconds
+  sender_uid (BIGINT)    # userid of sender of message
+  receiver_uid (BIGINT)  # userid of receiver of message
+
+DROP TABLE IF EXISTS temp.messages ;
+CREATE TABLE IF NOT EXISTS temp.messages (
+    ds STRING
+    ,ts BIGINT
+    ,sender_uid STRING
+    ,receiver_uid STRING
+  )
+  ;
+
+insert overwrite table temp.rising_temperature
+select * from 
+(
+select stack(
+    10,                 
+'2015-01-01',unix_timestamp(current_timestamp())+10,'A','B',
+'2015-01-01',unix_timestamp(current_timestamp())+20,'A','B',
+'2015-01-01',unix_timestamp(current_timestamp())+30,'C','B',
+'2015-01-01',unix_timestamp(current_timestamp())+40,'B','C',
+'2015-01-01',unix_timestamp(current_timestamp())+50,'C','D',
+'2015-01-01',unix_timestamp(current_timestamp())+60, 'A','B',
+'2015-01-01',unix_timestamp(current_timestamp())+70,'B','D',
+'2015-01-01',unix_timestamp(current_timestamp())+80, 'B','A',
+'2015-01-01',unix_timestamp(current_timestamp())+90,'A','B',
+'2015-01-01',unix_timestamp(current_timestamp())+100 ,'B','A'
+
+    ) 
+) s;
+
+
+
+# This is about finding interactions betweens rows where it is all stacked from
+# define the "response"
+# the first record after certain record that has sender_uid and receiver_uid order reversed.
+# this is super interesting. so there is a way to create a interaction map between two people
+# and order them
+# and group them and calculate the min and max of each group and subtract group by group to get all interaction latency
+# and get average wait time between two people
+
+# STEP 1
+# - self join the message table with 2 conceptual conditions
+# -- reversed receiver and sender join condition in order to get response
+# -- only join ts that is larger in the response table (also the same table just differnet alias)
+# -- order by the entire table in order to get the result in order
+select
+    send.sender_uid
+    ,send.receiver_uid
+    ,send.ds
+    ,send.ts
+    ,row_number() over (
+        partition by
+            send.sender_uid
+            ,send.receiver_uid
+            ,send.ds
+            ,send.ts
+        order by
+            send.ts asc
+            ,response.ts asc
+            ) order_of_response
+    ,response.sender_uid
+    ,response.receiver_uid
+    ,response.ds
+    ,response.ts
+from (
+    select 
+        sender_uid
+        ,receiver_uid
+        ,ds
+        ,ts
+    from temp.messages
+) send
+left outer join (
+    select 
+        sender_uid
+        ,receiver_uid
+        ,ds
+        ,ts
+    from temp.messages
+    ) response
+on send.sender_uid = response.receiver_uid
+    and send.receiver_uid = response.sender_uid
+    and response.ts > send.ts
+    and response.ds < date_add(cast(send.ds as date),1) -- assumption that real interactions should not go over a day
+order by send.ts
+
+# the resulting table will have all future responses within a day.
+# but the responses are not guaranteed to be direct response to the specific send.
+
+sender_uid  receiver_uid  ds  ts  order_of_response sender_uid  receiver_uid  ds  ts
+A B 2015-01-01  1546755868  1 B A 2015-01-01  1546755938
+A B 2015-01-01  1546755868  2 B A 2015-01-01  1546755958
+A B 2015-01-01  1546755878  1 B A 2015-01-01  1546755938
+A B 2015-01-01  1546755878  2 B A 2015-01-01  1546755958
+C B 2015-01-01  1546755888  1 B C 2015-01-01  1546755898
+B C 2015-01-01  1546755898  1       
+C D 2015-01-01  1546755908  1       
+A B 2015-01-01  1546755918  1 B A 2015-01-01  1546755938
+A B 2015-01-01  1546755918  2 B A 2015-01-01  1546755958
+B D 2015-01-01  1546755928  1       
+B A 2015-01-01  1546755938  1 A B 2015-01-01  1546755948
+A B 2015-01-01  1546755948  1 B A 2015-01-01  1546755958
+B A 2015-01-01  1546755958  1       
+
+# STEP 2 : select the earliest response to measure the time gap
+
+select
+    count(1) total_sent
+    ,count(if ( t.response_time < 30 and t.response_time is not null, 1, null)) responded_under30
+from (
+    select
+        send.sender_uid
+        ,send.receiver_uid
+        ,send.ds
+        ,send.ts
+        ,row_number() over (
+            partition by
+                send.sender_uid
+                ,send.receiver_uid
+                ,send.ds
+                ,send.ts
+            order by
+                send.ts asc
+                ,response.ts asc
+                ) order_of_response
+        ,response.sender_uid
+        ,response.receiver_uid
+        ,response.ds
+        ,response.ts
+        ,response.ts - send.ts as response_time
+    from (
+        select 
+            sender_uid
+            ,receiver_uid
+            ,ds
+            ,ts
+        from temp.messages
+        order by ts
+    ) send
+    left outer join (
+        select 
+            sender_uid
+            ,receiver_uid
+            ,ds
+            ,ts
+        from temp.messages
+        ) response
+    on send.sender_uid = response.receiver_uid
+        and send.receiver_uid = response.sender_uid
+        and response.ts > send.ts
+        and response.ds < date_add(cast(send.ds as date),1) -- assumption that real interactions should not go over a day
+    having order_of_response = 1
+    order by send.ts
+    ) t
+
+## Study about timestamp !!
+
+select
+    unix_timestamp(current_timestamp())
+    ,unix_timestamp(current_timestamp())+10
+    ,unix_timestamp(date_add(current_date(),1))
+
 
