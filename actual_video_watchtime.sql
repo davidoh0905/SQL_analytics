@@ -49,6 +49,59 @@ select stack(
 ) s;
 """
 
+# Step 1 : 
+- row_number for all rows under certain user_id
+- row_number with condition for common feature of fields that I want to monitor consecutiveness of
+
+select 
+    outputuser_id
+    ,event_name
+    ,ts
+    ,if(event_name like '%video_play%', True, False) video_play
+    -- """the commonality of the consecutive rows"""
+    -- if I can legitimately make an assumption that one user watches one video,
+    -- the first true will always be the click_video_play
+    -- and can seperate all the video_play related actions by interruption.
+    ,row_number() over ( -- This will become original row_numbering
+        partition by outputuser_id
+        order by ts asc
+        ) row_num
+    -- row number for userid
+from temp.video_watch
+
+# Step 2 : 
+- subtract the original row_number and conditional row_number
+- the gamp will become grouppings of consecutive video watches seperated by interruptions
+- THis only works under the assumption that each user_id watched one video
+select
+    t1.outputuser_id
+    ,t1.event_name
+    ,t1.ts
+    ,t1.video_play
+    ,t1.row_num -- original row_number
+    - row_number() over ( -- conditional row number with constraint given at the end WHERE clause
+        partition by t1.outputuser_id
+        order by t1.ts asc
+        ) consecutive_group
+from (
+    select 
+        outputuser_id
+        ,event_name
+        ,ts
+        ,if(event_name like '%video_play%', True, False) video_play
+        ,row_number() over (
+            partition by outputuser_id
+            order by ts asc
+            ) row_num
+    from temp.video_watch
+    ) t1
+where t1.video_play = true
+
+
+# Step 3 : 
+- From the result of step 2, I need to get the first chunk
+- and among the first chunk I need to get the max
+
 
 select
     t2.outputuser_id
@@ -70,8 +123,7 @@ from (
         ,t1.event_name
         ,t1.ts
         ,t1.video_play
-        ,t1.row_num
-        - row_number() over (
+        ,t1.row_num - row_number() over (
             partition by t1.outputuser_id
             order by t1.ts asc
             ) consecutive_group
@@ -82,17 +134,67 @@ from (
             ,event_name
             ,ts
             ,if(event_name like '%video_play%', True, False) video_play
-            -- if I can legitimately make an assumption that one user watches one video,
-            -- the first true will always be the click_video_play
-            -- and can seperate all the video_play related actions by interruption.
             ,row_number() over (
                 partition by outputuser_id
                 order by ts asc
                 ) row_num
-            -- row number for userid
         from temp.video_watch
         ) t1
     where t1.video_play = true
 ) t2
 having t2.consecutive_group = min_consecutive_group -- minimum group
     and t2.ts = consecutive_group_max_ts -- max of the minimum group
+
+
+
+## STEP 4 : substring!
+-- I don't know much about regular expression but this is doable!!
+-- calculating with the result of sub-groupby with window function. 
+-- seems like I have to come out of the subquery to do so
+
+select 
+    t3.outputuser_id
+    ,if( split(t3.event_name,'_')[2] rlike '[^0-9]'   ,'0%', concat(split(t3.event_name,'_')[2],'%'))
+from (
+    select
+        t2.outputuser_id
+        ,t2.event_name
+        ,t2.ts
+        ,t2.consecutive_group 
+        ,min(t2.consecutive_group) over (
+            partition by t2.outputuser_id
+            ) as min_consecutive_group
+         -- this is to select the first consecutive video play group.
+         -- the consecutive group is seperated by interruption
+        ,max(t2.ts) over (
+            partition by t2.outputuser_id, t2.consecutive_group
+            ) as consecutive_group_max_ts
+         -- within each consecutive group, select the line with maximum timestamp which will give us the largest video_play_pct
+    from (
+        select
+            t1.outputuser_id
+            ,t1.event_name
+            ,t1.ts
+            ,t1.video_play
+            ,t1.row_num - row_number() over (
+                partition by t1.outputuser_id
+                order by t1.ts asc
+                ) consecutive_group
+            -- creating a consecutive group
+        from (
+            select 
+                outputuser_id
+                ,event_name
+                ,ts
+                ,if(event_name like '%video_play%', True, False) video_play
+                ,row_number() over (
+                    partition by outputuser_id
+                    order by ts asc
+                    ) row_num
+            from temp.video_watch
+            ) t1
+        where t1.video_play = true
+    ) t2
+    having t2.consecutive_group = min_consecutive_group -- minimum group
+        and t2.ts = consecutive_group_max_ts -- max of the minimum group
+    )t3
